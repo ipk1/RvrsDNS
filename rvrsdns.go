@@ -33,7 +33,7 @@ func main() {
 	wg := &sync.WaitGroup{}
 	results := make(chan string)
 
-	// Start workers
+	// Start worker goroutines
 	for i := 0; i < opts.Threads; i++ {
 		wg.Add(1)
 		go worker(work, results, wg)
@@ -65,9 +65,16 @@ func worker(work <-chan string, results chan<- string, wg *sync.WaitGroup) {
 	}
 
 	for cidr := range work {
-		ips, _ := expandCIDR(cidr)
+		ips, err := expandCIDR(cidr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error expanding CIDR %s: %v\n", cidr, err)
+			continue
+		}
 		for _, ip := range ips {
-			addr, _ := resolver.LookupAddr(context.Background(), ip)
+			addr, err := resolver.LookupAddr(context.Background(), ip)
+			if err != nil {
+				continue
+			}
 			for _, a := range addr {
 				if strings.Contains(a, opts.Domain) {
 					for _, port := range opts.CommonPorts {
@@ -102,5 +109,32 @@ func writeResults(results <-chan string) {
 
 	for result := range results {
 		file.WriteString(result)
+	}
+}
+
+func expandCIDR(cidr string) ([]string, error) {
+	ip, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil, err
+	}
+
+	var ips []string
+	for ip := ip.Mask(ipnet.Mask); ipnet.Contains(ip); incIP(ip) {
+		ips = append(ips, ip.String())
+	}
+
+	// Remove network address and broadcast address if applicable
+	if len(ips) > 2 {
+		return ips[1 : len(ips)-1], nil
+	}
+	return ips, nil
+}
+
+func incIP(ip net.IP) {
+	for j := len(ip) - 1; j >= 0; j-- {
+		ip[j]++
+		if ip[j] != 0 {
+			break
+		}
 	}
 }
